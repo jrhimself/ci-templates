@@ -1,0 +1,32 @@
+# Caller for a public repository. Copy to .github/workflows/security.yml
+# and pin @v1 to the tag created after this repository's first merge.
+# Do not create that tag from a pull request.
+name: Security
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Ceiling for the reusable workflow. A caller that sets permissions
+# cannot grant less than the jobs it actually runs.
+permissions:
+  actions: read
+  contents: read
+  id-token: write
+  pull-requests: read
+  security-events: write
+
+jobs:
+  security:
+    uses: jrhimself/ci-templates/.github/workflows/security.yml@v1
+    with:
+      visibility: public
+      node-version: "22"
+      working-directory: .
+    # Both secrets are optional. Dependabot runs receive neither,
+    # and the called workflow treats an empty value as unset.
+    secrets:
+      gitleaks_license: ${{ secrets.GITLEAKS_LICENSE }}
+      scorecard_token: ${{ secrets.SCORECARD_TOKEN }}

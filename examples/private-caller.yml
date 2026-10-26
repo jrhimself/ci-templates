@@ -1,0 +1,43 @@
+# Caller for a private repository. Copy the jobs you need into
+# .github/workflows/. visibility: private skips CodeQL and Scorecard.
+# Pass the ZAP URL at dispatch time. Do not commit a real hostname.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      target-url:
+        description: Absolute http or https URL for the ZAP baseline
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  security:
+    uses: jrhimself/ci-templates/.github/workflows/security.yml@v1
+    with:
+      visibility: private
+      node-version: "22"
+      working-directory: .
+
+  # Use working-directory e2e when that directory has its own package.json.
+  # When dependencies live at the repository root, keep working-directory as
+  # "." and set command to npx playwright test --config e2e/playwright.config.ts.
+  e2e:
+    uses: jrhimself/ci-templates/.github/workflows/e2e.yml@v1
+    with:
+      node-version: "22"
+      working-directory: e2e
+
+  zap:
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    uses: jrhimself/ci-templates/.github/workflows/zap-baseline.yml@v1
+    with:
+      target-url: ${{ inputs.target-url || 'https://example.com' }}
+      fail-on-high: false
