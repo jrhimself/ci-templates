@@ -385,7 +385,7 @@ jobs:
         with:
           persist-credentials: false
 
-      # Callers pin this repository by tag. Everything else stays hash-pinned.
+      # Callers pin jrhimself/platform by tag. Everything else stays hash-pinned.
       - name: Write zizmor policy
         run: |
           cat > "${RUNNER_TEMP}/zizmor.yml" <<'EOF'
@@ -393,7 +393,7 @@ jobs:
             unpinned-uses:
               config:
                 policies:
-                  "jrhimself/ci-templates/*": ref-pin
+                  "jrhimself/platform/*": ref-pin
                   "*": hash-pin
           EOF
 

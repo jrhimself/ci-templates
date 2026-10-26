@@ -20,7 +20,7 @@ permissions:
 
 jobs:
   security:
-    uses: jrhimself/ci-templates/.github/workflows/security.yml@v1
+    uses: jrhimself/platform/.github/workflows/security.yml@v1
     with:
       visibility: public
       node-version: "22"
