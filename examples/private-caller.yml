@@ -20,7 +20,7 @@ permissions:
 
 jobs:
   security:
-    uses: jrhimself/ci-templates/.github/workflows/security.yml@v1
+    uses: jrhimself/platform/.github/workflows/security.yml@v1
     with:
       visibility: private
       node-version: "22"
@@ -30,14 +30,14 @@ jobs:
   # When dependencies live at the repository root, keep working-directory as
   # "." and set command to npx playwright test --config e2e/playwright.config.ts.
   e2e:
-    uses: jrhimself/ci-templates/.github/workflows/e2e.yml@v1
+    uses: jrhimself/platform/.github/workflows/e2e.yml@v1
     with:
       node-version: "22"
       working-directory: e2e
 
   zap:
     if: ${{ github.event_name == 'workflow_dispatch' }}
-    uses: jrhimself/ci-templates/.github/workflows/zap-baseline.yml@v1
+    uses: jrhimself/platform/.github/workflows/zap-baseline.yml@v1
     with:
       target-url: ${{ inputs.target-url || 'https://example.com' }}
       fail-on-high: false

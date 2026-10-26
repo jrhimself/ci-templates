@@ -1,6 +1,8 @@
-# ci-templates
+# platform
 
-Reusable GitHub Actions workflows for repositories on the personal account `jrhimself`. A caller invokes one with a few lines. This repository holds no secrets, no hostnames, and no application details. Callers pass those at runtime, if they need them at all.
+Central shared repository for every repository on the personal account `jrhimself`. The repository is [`jrhimself/platform`](https://github.com/jrhimself/platform). Today it holds reusable GitHub Actions workflows and Dependabot defaults. It may hold more shared things later.
+
+A caller invokes a workflow with a few lines. This repository holds no secrets, no hostnames, and no application details. Callers pass those at runtime, if they need them at all.
 
 The account has no GitHub Pro and no GitHub Advanced Security. Private repositories cannot use CodeQL or GitHub secret scanning. Public repositories can.
 
@@ -9,7 +11,7 @@ The account has no GitHub Pro and no GitHub Advanced Security. Private repositor
 Pin a caller to a release tag:
 
 ```yaml
-uses: jrhimself/ci-templates/.github/workflows/security.yml@v1
+uses: jrhimself/platform/.github/workflows/security.yml@v1
 ```
 
 `v1` does not exist until the owner tags the merge commit of the first version. This repository does not create tags or releases.
@@ -84,7 +86,7 @@ A public Node monorepo, from [`examples/public-caller.yml`](examples/public-call
 ```yaml
 jobs:
   security:
-    uses: jrhimself/ci-templates/.github/workflows/security.yml@v1
+    uses: jrhimself/platform/.github/workflows/security.yml@v1
     with:
       visibility: public
       node-version: "22"
@@ -152,7 +154,7 @@ A denylist that must fail when its secret is absent stays in the application rep
 
 ## This repository
 
-[`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs actionlint and zizmor on the workflows in this repository. It does not call `security.yml`. There is no lockfile for OSV and no language for CodeQL to extract.
+Shared files for `jrhimself` repositories live here. [`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs actionlint and zizmor on the workflows in this repository. It does not call `security.yml`. There is no lockfile for OSV and no language for CodeQL to extract.
 
 ## First version
 
@@ -168,6 +170,6 @@ After this change is merged, tag that commit `v1` and publish the release from t
 - Semgrep fails on any finding from the packs you configure, not only high severity. The registry has to be reachable. No application token is sent to Semgrep.
 - gitleaks comments are disabled. A leak still fails the job and is in the log, with redaction. If the action cannot tell a personal account from an organization, upstream requires `gitleaks_license` and the job fails closed. That lookup uses the workflow token against the public user API.
 - The ZAP action's own `fail_action` input fails on any alert, including warnings. This workflow leaves it false and fails only for High (`riskcode` 3) when `fail-on-high` is true. A scan that cannot reach the URL still fails.
-- zizmor in `security.yml` allows `jrhimself/ci-templates/*` to be pinned by tag. Every other action must be pinned by commit SHA. `ref-confusion` can still flag a tag that shares its name with a branch, so do not create a branch named `v1`.
+- zizmor in `security.yml` allows `jrhimself/platform/*` to be pinned by tag. Every other action must be pinned by commit SHA. `ref-confusion` can still flag a tag that shares its name with a branch, so do not create a branch named `v1`.
 - actionlint in a caller resolves `@v1` over the network. Until the tag exists, that job fails.
 - Playwright's HTML report is not created by the default `list` reporter. The upload warns instead of failing when the directory is missing, so a green run with the wrong reporter does not leave a report artifact.
