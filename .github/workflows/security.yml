@@ -1,0 +1,474 @@
+name: Security
+
+# Reusable security checks for a caller repository.
+# CodeQL and OpenSSF Scorecard run only when visibility is public.
+# No secret is required. Optional secrets that are absent stay empty
+# and the jobs still run, including on Dependabot pull requests.
+
+on:
+  workflow_call:
+    inputs:
+      visibility:
+        description: "public or private. Must match the repository. public adds CodeQL and OpenSSF Scorecard."
+        required: true
+        type: string
+      node-version:
+        description: "Node.js version for the CodeQL job. Other jobs do not install Node."
+        required: false
+        type: string
+        default: "22"
+      working-directory:
+        description: "Relative directory scanned for dependencies and by Semgrep. Workflow files are always read from the repository root."
+        required: false
+        type: string
+        default: "."
+      codeql:
+        description: "Run CodeQL when visibility is public."
+        required: false
+        type: boolean
+        default: true
+      codeql-languages:
+        description: "Comma-separated CodeQL language identifiers."
+        required: false
+        type: string
+        default: "javascript-typescript"
+      scorecard:
+        description: "Run OpenSSF Scorecard when visibility is public."
+        required: false
+        type: boolean
+        default: true
+      semgrep-config:
+        description: "Space-separated Semgrep --config values. The default packs cover JavaScript and TypeScript."
+        required: false
+        type: string
+        default: "p/javascript p/typescript"
+    secrets:
+      gitleaks_license:
+        description: "Optional. Upstream requires a license only for GitHub organization accounts. Personal accounts leave this unset."
+        required: false
+      scorecard_token:
+        description: "Optional PAT. When omitted, Scorecard uses the workflow token and some checks are inconclusive."
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: security-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  preflight:
+    name: preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Validate inputs
+        env:
+          DECLARED_VISIBILITY: ${{ inputs.visibility }}
+          ACTUAL_VISIBILITY: ${{ github.event.repository.visibility }}
+          WORKING_DIRECTORY: ${{ inputs.working-directory }}
+          SEMGREP_CONFIGS: ${{ inputs.semgrep-config }}
+          NODE_VERSION: ${{ inputs.node-version }}
+          CODEQL_LANGUAGES: ${{ inputs.codeql-languages }}
+        run: |
+          python3 - <<'PY'
+          import os
+          import re
+          import sys
+
+          declared = os.environ["DECLARED_VISIBILITY"].strip().lower()
+          actual = os.environ.get("ACTUAL_VISIBILITY", "").strip().lower()
+          if declared not in {"public", "private"}:
+              sys.exit("visibility must be public or private")
+          if actual and actual != declared:
+              sys.exit(
+                  f"visibility input is {declared!r} but the repository is {actual!r}"
+              )
+
+          directory = os.environ["WORKING_DIRECTORY"]
+          parts = directory.split("/")
+          segment = re.compile(r"^[A-Za-z0-9._-]+$")
+          if directory != "." and (
+              not parts
+              or any(part in {"", ".", ".."} for part in parts)
+              or any(segment.fullmatch(part) is None for part in parts)
+          ):
+              sys.exit("working-directory must be '.' or a relative path without '..'")
+
+          configs = os.environ["SEMGREP_CONFIGS"].split()
+          rule = re.compile(r"^[A-Za-z0-9_./:-]+$")
+          if not configs or any(rule.fullmatch(item) is None for item in configs):
+              sys.exit("semgrep-config must be a space-separated list of config names")
+
+          node = os.environ["NODE_VERSION"]
+          if re.fullmatch(r"[0-9]+(\.[0-9]+){0,2}", node) is None:
+              sys.exit("node-version must look like 22 or 22.18.0")
+
+          languages = os.environ["CODEQL_LANGUAGES"]
+          if re.fullmatch(r"[A-Za-z0-9+-]+(,[A-Za-z0-9+-]+)*", languages) is None:
+              sys.exit("codeql-languages must be a comma-separated list of language ids")
+          PY
+
+  gitleaks:
+    name: gitleaks
+    needs: preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      pull-requests: read # list the commits on a pull request
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Check event
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          case "$EVENT_NAME" in
+            pull_request|push|workflow_dispatch|schedule)
+              ;;
+            *)
+              echo "::error::gitleaks-action supports pull_request, push, workflow_dispatch, and schedule. This run is ${EVENT_NAME}." >&2
+              exit 1
+              ;;
+          esac
+
+      # Comments stay off so a read-only Dependabot token is enough.
+      # An empty license is valid for a personal account. The action
+      # asks for a license only after it classifies the owner as an
+      # organization, and only when that lookup itself fails closed.
+      - name: Scan commits
+        uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GITLEAKS_LICENSE: ${{ secrets.gitleaks_license }}
+          GITLEAKS_ENABLE_COMMENTS: "false"
+
+  dependencies:
+    name: dependencies
+    needs: preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The image entrypoint splits this block on newlines.
+      # Exit 128 (no lockfile) is swallowed by that image; the next
+      # step fails the job when the results file was not written.
+      - name: Scan lockfiles
+        id: scan
+        continue-on-error: true
+        uses: google/osv-scanner-action/osv-scanner-action@b1d267aea5211fa648d9d442fa64b90dbdcbdd36 # v2.7.0
+        with:
+          scan-args: |-
+            --format=json
+            --output-file=osv-results.json
+            --recursive
+            --x-exclude=node_modules
+            --x-exclude=dist
+            --x-exclude=build
+            --x-exclude=coverage
+            ${{ inputs.working-directory }}
+
+      - name: Fail on high or critical
+        if: ${{ !cancelled() }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import sys
+
+          path = "osv-results.json"
+          if not os.path.isfile(path) or os.path.getsize(path) == 0:
+              sys.exit(
+                  "OSV-Scanner did not write osv-results.json. "
+                  "The working directory needs a lockfile such as package-lock.json. "
+                  "A missing lockfile is not a clean scan."
+              )
+
+          with open(path, encoding="utf-8") as handle:
+              document = json.load(handle)
+
+          rank_labels = {0: "unknown", 1: "low", 2: "medium", 3: "high", 4: "critical"}
+          label_rank = {
+              "critical": 4,
+              "high": 3,
+              "moderate": 2,
+              "medium": 2,
+              "low": 1,
+              "unknown": 0,
+          }
+
+          def rank_from_score(value):
+              try:
+                  score = float(str(value).strip())
+              except (TypeError, ValueError):
+                  return None
+              if score >= 9.0:
+                  return 4
+              if score >= 7.0:
+                  return 3
+              if score >= 4.0:
+                  return 2
+              if score > 0:
+                  return 1
+              return 0
+
+          def group_rank(group):
+              raw = group.get("max_severity") or ""
+              ranked = rank_from_score(raw)
+              if ranked is not None:
+                  return ranked
+              return label_rank.get(str(raw).strip().lower(), 0)
+
+          findings = []
+          for result in document.get("results") or []:
+              source = (result.get("source") or {}).get("path", "")
+              for package in result.get("packages") or []:
+                  info = package.get("package") or {}
+                  rank = 0
+                  for group in package.get("groups") or []:
+                      rank = max(rank, group_rank(group))
+                  if rank == 0:
+                      for vulnerability in package.get("vulnerabilities") or []:
+                          specific = vulnerability.get("database_specific") or {}
+                          label = str(specific.get("severity") or "").strip().lower()
+                          rank = max(rank, label_rank.get(label, 0))
+                  identifiers = []
+                  for group in package.get("groups") or []:
+                      identifiers.extend(group.get("ids") or [])
+                  if not identifiers:
+                      identifiers = [
+                          item.get("id", "")
+                          for item in package.get("vulnerabilities") or []
+                          if item.get("id")
+                      ]
+                  findings.append(
+                      {
+                          "rank": rank,
+                          "source": source,
+                          "name": info.get("name", ""),
+                          "version": info.get("version", ""),
+                          "ids": ", ".join(identifiers),
+                      }
+                  )
+
+          blocking = [item for item in findings if item["rank"] >= 3]
+          print(f"Vulnerable package groups: {len(findings)}")
+          print(f"High or critical: {len(blocking)}")
+          for item in sorted(findings, key=lambda entry: (-entry["rank"], entry["name"])):
+              line = (
+                  f"{rank_labels[item['rank']]}: {item['name']}@{item['version']} "
+                  f"[{item['ids']}] ({item['source']})"
+              )
+              if item["rank"] >= 3:
+                  print(f"::error::{line}")
+              else:
+                  print(line)
+          if blocking:
+              sys.exit(1)
+          print("No high or critical vulnerabilities.")
+          PY
+
+      - name: Upload OSV results
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: osv-results
+          path: osv-results.json
+          if-no-files-found: warn
+          retention-days: 14
+
+  semgrep:
+    name: semgrep
+    needs: preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    env:
+      # 1.182.1 index digest, 2026-10-26.
+      SEMGREP_IMAGE: semgrep/semgrep@sha256:451b3d875c00dac7ed5db5293e584a07de11449a409c10b3c2d2652f429630b6
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Scan
+        env:
+          SEMGREP_CONFIGS: ${{ inputs.semgrep-config }}
+          SCAN_DIRECTORY: ${{ inputs.working-directory }}
+        run: |
+          python3 - <<'PY'
+          import os
+          import subprocess
+          import sys
+
+          image = os.environ["SEMGREP_IMAGE"]
+          configs = os.environ["SEMGREP_CONFIGS"].split()
+          directory = os.environ["SCAN_DIRECTORY"]
+          command = [
+              "docker",
+              "run",
+              "--rm",
+              "-v",
+              f"{os.getcwd()}:/src",
+              "-w",
+              "/src",
+              "-e",
+              "SEMGREP_SEND_METRICS=off",
+              image,
+              "semgrep",
+              "scan",
+              "--error",
+              "--metrics=off",
+              "--exclude",
+              "node_modules",
+              "--exclude",
+              "dist",
+              "--exclude",
+              "build",
+              "--exclude",
+              "coverage",
+              "--exclude",
+              ".git",
+          ]
+          for config in configs:
+              command.extend(["--config", config])
+          command.append(directory)
+          sys.exit(subprocess.call(command))
+          PY
+
+  actionlint:
+    name: actionlint
+    needs: preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Lint workflows
+        uses: raven-actions/actionlint@3d39aea434753780c3b3d4a1a31c854b4dbf49d7 # v2.2.0
+        with:
+          version: "1.7.12"
+          shellcheck: true
+          pyflakes: false
+
+  zizmor:
+    name: zizmor
+    needs: preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Callers pin this repository by tag. Everything else stays hash-pinned.
+      - name: Write zizmor policy
+        run: |
+          cat > "${RUNNER_TEMP}/zizmor.yml" <<'EOF'
+          rules:
+            unpinned-uses:
+              config:
+                policies:
+                  "jrhimself/ci-templates/*": ref-pin
+                  "*": hash-pin
+          EOF
+
+      - name: Audit workflows
+        uses: zizmorcore/zizmor-action@53290badfa369cb0bf7ad16342cb62c2fa47ac7b # v0.8.0
+        with:
+          version: "1.31.1"
+          advanced-security: false
+          annotations: true
+          online-audits: true
+          collect: workflows
+          config: ${{ runner.temp }}/zizmor.yml
+
+  codeql:
+    name: codeql
+    needs: preflight
+    if: ${{ inputs.visibility == 'public' && inputs.codeql }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      actions: read # CodeQL reads Action metadata while uploading
+      contents: read
+      security-events: write # upload the SARIF to code scanning
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ inputs.node-version }}
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
+        with:
+          languages: ${{ inputs.codeql-languages }}
+
+      - name: Autobuild
+        uses: github/codeql-action/autobuild@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
+
+      # Dependabot pull requests receive a read-only token, so the
+      # analysis still runs and the SARIF upload is skipped.
+      - name: Analyze
+        uses: github/codeql-action/analyze@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
+        with:
+          upload: ${{ github.actor == 'dependabot[bot]' && 'never' || 'always' }}
+          upload-database: false
+          wait-for-processing: false
+
+  scorecard:
+    name: scorecard
+    needs: preflight
+    if: ${{ inputs.visibility == 'public' && inputs.scorecard }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      actions: read # Scorecard reads workflow runs for the CI check
+      contents: read
+      id-token: write # publish the score on a push to the default branch
+      security-events: write # upload the SARIF to code scanning
+    steps:
+      - name: Run Scorecard
+        uses: ossf/scorecard-action@fa7117db83c52d787ae5a89f350999701505d78e # v2.5.0
+        with:
+          results_file: results.sarif
+          results_format: sarif
+          repo_token: ${{ secrets.scorecard_token || github.token }}
+          publish_results: ${{ github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+
+      - name: Upload Scorecard SARIF
+        if: ${{ github.actor != 'dependabot[bot]' && !cancelled() }}
+        continue-on-error: true
+        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
+        with:
+          sarif_file: results.sarif
+          category: scorecard

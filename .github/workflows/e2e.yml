@@ -1,0 +1,137 @@
+name: End to end
+
+# Install dependencies, install Playwright browsers, run a caller-supplied
+# command, and upload the HTML report. No secrets are read.
+
+on:
+  workflow_call:
+    inputs:
+      node-version:
+        description: "Node.js version to install."
+        required: false
+        type: string
+        default: "22"
+      working-directory:
+        description: "Directory that contains package.json. Use e2e when that folder is its own package."
+        required: false
+        type: string
+        default: "."
+      install-command:
+        description: "Shell command that installs dependencies, run in working-directory."
+        required: false
+        type: string
+        default: "npm ci"
+      command:
+        description: "Shell command that runs the tests, run in working-directory."
+        required: false
+        type: string
+        default: "npx playwright test"
+      playwright-install-args:
+        description: "Arguments for npx playwright install. The default installs browser system libraries."
+        required: false
+        type: string
+        default: "--with-deps"
+      report-path:
+        description: "Playwright HTML report directory, relative to working-directory."
+        required: false
+        type: string
+        default: "playwright-report"
+      artifact-name:
+        description: "Artifact name for the HTML report."
+        required: false
+        type: string
+        default: "playwright-report"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: e2e-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  e2e:
+    name: e2e
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Validate inputs
+        env:
+          NODE_VERSION: ${{ inputs.node-version }}
+          WORKING_DIRECTORY: ${{ inputs.working-directory }}
+          PLAYWRIGHT_INSTALL_ARGS: ${{ inputs.playwright-install-args }}
+          REPORT_PATH: ${{ inputs.report-path }}
+          ARTIFACT_NAME: ${{ inputs.artifact-name }}
+        run: |
+          python3 - <<'PY'
+          import os
+          import re
+          import sys
+
+          node = os.environ["NODE_VERSION"]
+          if re.fullmatch(r"[0-9]+(\.[0-9]+){0,2}", node) is None:
+              sys.exit("node-version must look like 22 or 22.18.0")
+
+          def relative(value, label):
+              parts = value.split("/")
+              segment = re.compile(r"^[A-Za-z0-9._-]+$")
+              if value == ".":
+                  return
+              if (
+                  not parts
+                  or any(part in {"", ".", ".."} for part in parts)
+                  or any(segment.fullmatch(part) is None for part in parts)
+              ):
+                  sys.exit(f"{label} must be '.' or a relative path without '..'")
+
+          relative(os.environ["WORKING_DIRECTORY"], "working-directory")
+          relative(os.environ["REPORT_PATH"], "report-path")
+          args = os.environ["PLAYWRIGHT_INSTALL_ARGS"]
+          if re.fullmatch(r"[A-Za-z0-9._= -]*", args) is None:
+              sys.exit("playwright-install-args contains unsupported characters")
+          name = os.environ["ARTIFACT_NAME"]
+          if re.fullmatch(r"[A-Za-z0-9._-]{1,64}", name) is None:
+              sys.exit("artifact-name must be a short filename")
+          PY
+
+      - name: Setup Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ inputs.node-version }}
+
+      - name: Install dependencies
+        working-directory: ${{ inputs.working-directory }}
+        env:
+          INSTALL_COMMAND: ${{ inputs.install-command }}
+        run: bash -euo pipefail -c "$INSTALL_COMMAND"
+
+      - name: Install Playwright browsers
+        working-directory: ${{ inputs.working-directory }}
+        env:
+          PLAYWRIGHT_INSTALL_ARGS: ${{ inputs.playwright-install-args }}
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC2086
+          npx playwright install ${PLAYWRIGHT_INSTALL_ARGS}
+
+      - name: Run tests
+        working-directory: ${{ inputs.working-directory }}
+        env:
+          E2E_COMMAND: ${{ inputs.command }}
+        run: bash -euo pipefail -c "$E2E_COMMAND"
+
+      - name: Upload report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ inputs.artifact-name }}
+          path: ${{ inputs.working-directory }}/${{ inputs.report-path }}
+          if-no-files-found: warn
+          retention-days: 14
