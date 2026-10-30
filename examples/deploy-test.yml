@@ -1,0 +1,64 @@
+# Puts main on the test environment after every merge, and a branch, tag or commit by hand.
+# Copy to .github/workflows/deploy-test.yml. Production stays a deliberate release (deploy-prod.yml).
+# After the deploy, smoke.sh checks that the site answers. After a deploy of main, the ZAP
+# baseline scans the test site. A branch deployed by hand is not scanned.
+# TEST_URL is a repository variable (Settings → Secrets and variables → Actions → Variables),
+# so no hostname is committed. The deploy step is the application's own; this one uses Wrangler.
+name: Deploy test
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Branch, tag or commit to deploy to test
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-test
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # By hand: the chosen ref. After a merge: the merged commit on main.
+          ref: ${{ inputs.ref || github.sha }}
+          persist-credentials: false
+
+      - name: Node 22
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          package-manager-cache: false
+
+      - name: Install
+        run: npm ci
+
+      - name: Deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: npm run deploy:test
+
+      - name: Smoke check
+        env:
+          TEST_URL: ${{ vars.TEST_URL }}
+        run: scripts/smoke.sh "$TEST_URL"
+
+  # Only after a deploy of main; a failed deploy does not scan (needs: deploy).
+  zap:
+    needs: deploy
+    if: github.event_name == 'push'
+    uses: jrhimself/platform/.github/workflows/zap-baseline.yml@v1
+    with:
+      target-url: ${{ vars.TEST_URL }}
+      fail-on-high: false
