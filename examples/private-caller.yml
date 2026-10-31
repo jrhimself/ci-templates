@@ -1,22 +1,29 @@
-# Caller for a private repository. Copy the jobs you need into
-# .github/workflows/. visibility: private skips CodeQL and Scorecard.
-# Pass the ZAP URL at dispatch time. Do not commit a real hostname.
-name: CI
+# Security caller for a private repository. Copy to .github/workflows/security.yml.
+# visibility: private skips CodeQL and Scorecard.
+# Every pull request and every Monday. A merge to main does not run it again: the pull
+# request already scanned that code, and the schedule scans the whole git history.
+# The checks of the application itself are in ci.yml; see "Recommended pipeline" in the README.
+name: Security
 
 on:
   pull_request:
-  push:
-    branches: [main]
+  # Monday 03:15 UTC, before Dependabot at 06:00 Europe/Amsterdam.
+  schedule:
+    - cron: "15 3 * * 1"
   workflow_dispatch:
-    inputs:
-      target-url:
-        description: Absolute http or https URL for the ZAP baseline
-        required: true
-        type: string
 
+# GitHub checks every job's permissions at startup, also the public-only jobs this
+# caller skips. The ceiling is the union of those declarations.
 permissions:
+  actions: read
   contents: read
+  id-token: write
   pull-requests: read
+  security-events: write
+
+concurrency:
+  group: security-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   security:
@@ -25,19 +32,3 @@ jobs:
       visibility: private
       node-version: "22"
       working-directory: .
-
-  # Use working-directory e2e when that directory has its own package.json.
-  # When dependencies live at the repository root, keep working-directory as
-  # "." and set command to npx playwright test --config e2e/playwright.config.ts.
-  e2e:
-    uses: jrhimself/platform/.github/workflows/e2e.yml@v1
-    with:
-      node-version: "22"
-      working-directory: e2e
-
-  zap:
-    if: ${{ github.event_name == 'workflow_dispatch' }}
-    uses: jrhimself/platform/.github/workflows/zap-baseline.yml@v1
-    with:
-      target-url: ${{ inputs.target-url || 'https://example.com' }}
-      fail-on-high: false

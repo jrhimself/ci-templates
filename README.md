@@ -20,6 +20,23 @@ A tag can move. After a release is trusted, a caller can pin that tag's commit S
 
 Dependabot groups minor and patch updates for npm (`deps`) and GitHub Actions (`ci`). See [`templates/dependabot.yml`](templates/dependabot.yml). Hash pins stay valid only when the version comment matches the commit, which is the comment format Dependabot updates.
 
+## Recommended pipeline
+
+How an application repository puts these workflows together. GitHub bills every job per started minute, so every check runs once: on the pull request, and not again after the merge.
+
+| Workflow | Runs on | What | Example |
+| --- | --- | --- | --- |
+| CI | `pull_request` | The application's own `check` (lint, tests, build), then `e2e.yml` only when `check` is green | [`examples/ci.yml`](examples/ci.yml) |
+| Security | `pull_request`, every Monday | `security.yml` | [`examples/private-caller.yml`](examples/private-caller.yml) |
+| Deploy test | `push` to `main`, or by hand for a branch | Deploy, smoke check, then `zap-baseline.yml` after a deploy of `main` | [`examples/deploy-test.yml`](examples/deploy-test.yml) |
+| Deploy prod | tag `v*`, or by hand on `main` | Tests and build once more, deploy, smoke check, then the tag and the release | [`examples/deploy-prod.yml`](examples/deploy-prod.yml) |
+
+- **A merge deploys, it does not check again.** The pull request already checked that code. Test always shows what the next release will be.
+- **Only docs changed.** `check` compares the merge commit with its base (`fetch-depth: 2`) and reports green within seconds when only Markdown or `docs/` changed; `e2e` is then skipped. Decide this in the job, not with `paths-ignore`: a required check whose workflow never starts blocks the merge.
+- **Smoke check after every deploy.** [`templates/smoke.sh`](templates/smoke.sh) sends a few requests and fails on an unexpected status or a missing text. In Deploy prod it runs before the tag and the release, so a version that does not answer is not recorded as released.
+- **Releasing by hand.** Deploy prod started by hand reads the version from `package.json`, stops when that tag exists, and creates the tag with `gh release create --target` after the deploy. A tag made with `GITHUB_TOKEN` starts no new workflow run, so it does not deploy twice. This suits an agent session that may start workflows but cannot push tags.
+- **No hostnames in the repository.** The deploy examples read the site from repository variables (`TEST_URL`, `PROD_URL`). The deploy command is the application's own; the examples use Wrangler.
+
 ## security.yml
 
 [`.github/workflows/security.yml`](.github/workflows/security.yml) runs on `workflow_call`.
@@ -96,7 +113,7 @@ jobs:
       scorecard_token: ${{ secrets.SCORECARD_TOKEN }}
 ```
 
-A private repository uses the same job with `visibility: private` and can omit both secrets. The full private caller is [`examples/private-caller.yml`](examples/private-caller.yml).
+A private repository uses the same job with `visibility: private` and can omit both secrets. The full private caller is [`examples/private-caller.yml`](examples/private-caller.yml): every pull request and every Monday, not again on a push to `main`. A public caller keeps `push` to `main`, because Scorecard publishes its results only on a push to the default branch.
 
 ## e2e.yml
 
